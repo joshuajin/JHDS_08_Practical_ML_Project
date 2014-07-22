@@ -1,29 +1,182 @@
 ---
-title: "Untitled 5"
+title: "Machine Learning - Identifying Human Exercise Activities"
+author: "Joshua Jin"
+date: "July 14, 2014"
 output: html_document
 ---
-#### Model Train
-0.    
-1. Split Datatse for Training and Testing
-2. Train Random Forest Model  
-3. Test and Review the Model Performance  
+This project write-up summarizes my analysis of the Human Activity Recognition dataset for the Practical Machine Learning course offered by the Johns Hopkins University School of Biostatistics and Coursera.
 
-#####Split Dataset for Training and Testing 
+The goal of this project is to develop a machine-learning model to predict user’s activity in the source data provided. Data were collected from accelerometers on the belt, forearm, arm, and dumbell of six participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).  
 
-- Use 60% data for the model training
+The R Caret package is used for the data sub-setting (feature selection), model training and cross-validation. After trying out different models that available in the package, I finally selected Random Forest algorithm as my machine learning model.  The whole machine-learning process included data processing, feature eliminations, model selections, model training, testing, and validating. The source codes and result in the write-up is reproducable. You can find the final results in the Results section towards the end of the write-up. 
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+####Data Processing
+I found that the source data contains many NA columns that need to be further processed. The source csv file has 160 columns, but many of them do not have usable data. I eliminated the first six non-numeric columns, such as user_name, num_window, etc. I also eliminated columns that have all NA values.
+
+#####Loading Required Packages and Set Working Directory  
+- Use a time function to keep track of the whole process   
+- Set to  working directory   
+- To detect number of CPU cores, use the function detectCores(). I have an 8-core computer, here I register 6-core to perform the data analysis. 
 
 ```{r}
-summary(cars)
+Sys.time()
+setwd("~/My_Projects/JohnsHDS/08_Practical_Machine_Learning/Temp_Explore_Ensemble")
+library(doMC)
+registerDoMC(cores = 6) # to detect number of cpu cores, use detectCores() 
+library(knitr)
+opts_chunk$set(cache=TRUE,echo=TRUE)
+options(width=120)
+library(caret)
 ```
 
-You can also embed plots, for example:
 
-```{r, echo=FALSE}
-plot(cars)
+##### Downloading Datasets 
+- The original training dataset contains 19622 rows and 160 variables/features.  
+- The validation dataset contains 20 rows and 160 variables/features.
+```{r}
+downloadDataset <- function(URL="", destFile="data.csv"){
+    if(!file.exists(destFile)){
+        download.file(URL, destFile, method="curl")
+    }else{
+        message("Dataset already downloaded.")
+    }
+}
+trainURL<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testURL <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+downloadDataset(trainURL, "pml-training.csv")
+downloadDataset(testURL, "pml-testing.csv")
+
+training <- read.csv("pml-training.csv",na.strings=c("NA",""))
+testing <-read.csv("pml-testing.csv",na.strings=c("NA",""))
+#dim(training)  # the source dataset provided for the purpose of training and testing
+#dim(testing)   # the provided dataset for the final validation
+
+# Reducing NA columns in trainging data
+colNACounts <- colSums(is.na(training))           # get NA counts 
+naColumns <- colNACounts >= 19000                 # ignore columns with most of NA values
+cleanTrainingData <- training[!naColumns]         # subset training data
+#dim(cleanTrainingData) #19622 rows, 60 variables/features            
+cleanTrainingData <- cleanTrainingData[, c(7:60)] # remove NA columns 
+#dim(cleanTrainingData) #19622 rows, 54 variables/features
+
+# Reducing NA columns in testing data
+colNACounts <- colSums(is.na(testing))             
+naColumns <- colNACounts >= 20                    
+cleanTestingData <- testing[!naColumns]            
+validationData <- cleanTestingData[, c(7:60)]     
+#dim(validationData) #20 rows, 54 variables/features
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+####Feature Selections
+I used Caret Variable Importance function to further reduce the number of variables/columns/features that are less importance based on my final model selected (see the next section description). Based the Variable Importance chart, I decided to use the top 50 percent of importance features and remove the rest features from my model training and testing datasets. 
+
+```{r}
+# Features Selections (reducing number of unimportant features/columns)
+# To determine important features for the random forest model, I uses ten percent training data. 
+featureImp <- createDataPartition(y = cleanTrainingData$classe, p = 0.1, list = F)
+featureImpSubset <- cleanTrainingData[featureImp, ]
+#dim(cleanTrainingData) #19622
+#dim(featureImpSubset) #1964, 54
+varImpModel.rf <- train(classe ~ ., data = featureImpSubset, method = "rf") # Takes about 2min by registerDoMC(cores=6)
+#ls (model.rf)
+rfImp <- varImp(varImpModel.rf)
+plot(rfImp) # Noticed that less than about 50 percent features are important
+
+# Select the top 50 percent of importance features 
+top50Pct <- quantile(rfImp$importance[, 1], 0.50) 
+featuerSelectFilter <- rfImp$importance[, 1] >= top50Pct # set a filter for selecting 50% features based on importance
+finalCleanTrainingData <- cleanTrainingData[, featuerSelectFilter] # select only top 50% features based on importance
+```
+
+After selecting the top 50% important features, the dataset contains 19622 rows and 28 features (or variables or columns). 
+```{r}
+dim(finalCleanTrainingData) 
+```
+
+####Describing Model Selection 
+I was trying to take a full advantage of Crate package in R with a focus on Ensemble Model. I have tried Bagged CART, Boosted Logistic Regression, and Support Vector Machines with Radial Basis Function Kernel, and was able to receive Kappa 0.9945, 0.9064, and 0.8972 respectively. But ultimately I decided to report out my learning experience on Random Forest for its accuracy.  My initial hurdle of using Random Forest is that it took about 45 minutes to train the model. However, with help of parallel processing and feature selection function offered by Caret package, that made the process much shorter and more practical.  
+
+####Cross-Validation and Out-of-Sample Error Expectation
+For training Random Forest model in Caret, I simply used available option ‘cv’.  Since I was satisfied with the accuracy, and I did not switch to alternatives. My initial out of sample error estimate for using Random Forest in the case was less than one percent. 
+
+####Model Training and Testing
+1. Split Datatse for Training and Testing  
+2. Train Random Forest Model     
+3. Test and Review the Model Performance     
+
+#####Split Dataset for Training and Testing 
+- Use 60% data for the model training
+- Use 40% data for the model testing
+```{r}
+# Training/Test split ratio: 60/40
+partition <- createDataPartition(y = finalCleanTrainingData$classe, p = 0.6, list = FALSE)
+modelTrainingData <- finalCleanTrainingData[partition, ]
+modelTestingData <- finalCleanTrainingData[-partition, ]
+dim(modelTrainingData)  #60% data for the model training
+dim(modelTestingData)   #40% data for the model testing
+```
+
+##### Random Forest Model Training and Testing
+- Use Random Forest model
+- Use cross-validation
+- Allow Parallel
+```{r}
+trControl <- trainControl(method = "cv", number = 4, allowParallel = TRUE)
+ptm <- proc.time()
+set.seed(3535)
+model.rf <- train(classe ~ ., data = modelTrainingData, method = "rf", prox = TRUE, 
+                  trControl = trControl)
+proc.time() - ptm # The rf model traning took less than 10 minutes on my computer.
+model.rf
+
+# Using the model testing data to evaluate the model performance and accuracy
+result.rf <- predict(model.rf, newdata = modelTestingData)
+confusionMatrixObj <- confusionMatrix(result.rf, modelTestingData$classe)
+#list(confusionMatrixObj)
+```
+
+####Results
+- Display Confusion Matrix
+- Display Kappa 
+- Display Accuracy 
+```{r}
+# Display Model's Confusion Matrix Table, overall Accuracy, and Kappa
+confusionMatrixObj$table
+confusionMatrixObj$overall[["Kappa"]]
+confusionMatrixObj$overall[["Accuracy"]] 
+```
+
+####Out-of-Sample Error 
+```{r}
+# Display Out of Sample Error
+outOfSampleError <- 1 - confusionMatrixObj$overall[["Accuracy"]]
+outOfSampleError 
+```
+
+####Result of Validating 20 Different Cases
+- Use another dataset (contains 20 different cases) for the final validation
+- Display the validation result
+- Write the result to files, each file contains one answer for each problem number.
+```{r}
+# Validating the model with validation data (20 different cases)
+answers <- predict(model.rf, validationData)
+answers <- as.character(answers)
+answers 
+
+# Write each answer to a separate  file with the problem id number for submissions. 
+pml_write_files = function(x) {
+    n = length(x)
+    for (i in 1:n) {
+        filename = paste0("problem_id_", i, ".txt")
+        write.table(x[i], file = filename, quote = FALSE, row.names = FALSE, 
+                    col.names = FALSE)
+    }
+}
+pml_write_files(answers)
+```
+
+Done.
+```{r}
+Sys.time()
+```
